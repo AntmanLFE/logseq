@@ -1389,8 +1389,8 @@
                         ;; Enable HTTP server when enabling mirror server
                         (when (and new-val (not (storage/get ::storage-spec/http-server-enabled)))
                           (storage/set ::storage-spec/http-server-enabled true))
-                        ;; Note: Using electron.ipc directly is correct here since settings
-                        ;; only run in desktop mode, not in mirror mode
+                        ;; Note: Using ipc/ipc directly is correct here since settings
+                        ;; only run in desktop mode (Electron), not in mirror web mode
                         (-> (ipc/ipc :server/set-config {:mirror-enabled? new-val})
                             ;; Restart server if running to apply changes
                             (p/then #(when (= "running" (state/sub [:electron/server :status]))

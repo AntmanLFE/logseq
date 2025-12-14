@@ -13,6 +13,9 @@
             [electron.window :as window]
             [promesa.core :as p]))
 
+;; Static files directory - relative to the electron app directory
+(def ^:private static-dir-relative-path "../../../static")
+
 ;; WebSocket connections registry - now maps connection to metadata
 (defonce ^:private *ws-connections (atom {}))
 (defonce ^:private *connection-id-counter (atom 0))
@@ -97,7 +100,7 @@
 (defn- setup-mirror-routes!
   "Setup routes for serving frontend and WebSocket RPC"
   [^js server win]
-  (let [static-dir (.join node-path js/__dirname "../../../static")]
+  (let [static-dir (.join node-path js/__dirname static-dir-relative-path)]
     
     ;; Serve main app at /app
     (.get server "/app"
