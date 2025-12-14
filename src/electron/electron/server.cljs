@@ -33,7 +33,8 @@
                   :tokens    (cfgs/get-item :server/tokens)
                   :autostart (cfgs/get-item :server/autostart)
                   :mcp-enabled? (cfgs/get-item :server/mcp-enabled?)
-                  :mirror-enabled? (cfgs/get-item :mirror-server/enabled)}))
+                  :mirror-enabled? (cfgs/get-item :server/mirror-enabled?)
+                  :mirror-password (cfgs/get-item :server/mirror-password)}))
 
 (defn- set-status!
   ([status] (set-status! status nil))

@@ -28,7 +28,7 @@
 (defn- validate-mirror-auth
   "Validate authentication for mirror server access"
   [auth-header]
-  (let [mirror-password (cfgs/get-item :mirror-server/password)]
+  (let [mirror-password (cfgs/get-item :server/mirror-password)]
     (when (and mirror-password (not (string/blank? mirror-password)))
       (let [provided-auth (string/replace (or auth-header "") "Bearer " "")]
         (when (not= provided-auth mirror-password)
@@ -84,12 +84,6 @@
   [^js server win]
   (let [static-dir (.join node-path js/__dirname "../../../static")]
     
-    ;; Register static file serving for frontend assets
-    (.register server FastifyStatic
-               (bean/->js {:root static-dir
-                          :prefix "/app/"
-                          :decorateReply false}))
-    
     ;; Serve main app at /app
     (.get server "/app"
           (fn [^js _req ^js rep]
@@ -100,28 +94,33 @@
                     (.code 404)
                     (.send "Frontend assets not found. Please build the app first."))))))
     
-    ;; WebSocket endpoint for RPC bridge
-    (.get server "/api/ws"
-          #js {:websocket true}
-          (fn [^js connection ^js request]
-            (ws-connection-handler connection request win)))))
+    ;; Register static file serving for frontend assets
+    (p/let [_ (.register server FastifyStatic
+                        (bean/->js {:root static-dir
+                                   :prefix "/app/"
+                                   :decorateReply false}))]
+      
+      ;; WebSocket endpoint for RPC bridge
+      (.get server "/api/ws"
+            #js {:websocket true}
+            (fn [^js connection ^js request]
+              (ws-connection-handler connection request win))))))
 
 (defn setup-mirror-server-in-main!
   "Add mirror server routes to existing server instance"
   [^js server win]
-  (when (cfgs/get-item :mirror-server/enabled)
+  (when (cfgs/get-item :server/mirror-enabled?)
     (logger/info "[mirror-server] Setting up mirror server routes")
     
-    ;; Register WebSocket plugin
-    (.register server FastifyWebSocket)
-    
-    ;; Setup routes
-    (setup-mirror-routes! server win)
-    
-    (logger/info "[mirror-server] Mirror server routes initialized")))
+    ;; Register WebSocket plugin first
+    (p/let [_ (.register server FastifyWebSocket)]
+      ;; Then setup routes
+      (setup-mirror-routes! server win)
+      
+      (logger/info "[mirror-server] Mirror server routes initialized"))))
 
 (defn notify-graph-change!
   "Notify connected mirror clients about graph changes"
   [change-type payload]
-  (when (cfgs/get-item :mirror-server/enabled)
+  (when (cfgs/get-item :server/mirror-enabled?)
     (broadcast-to-mirrors! change-type payload)))
