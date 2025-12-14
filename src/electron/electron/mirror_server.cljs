@@ -13,13 +13,14 @@
             [electron.window :as window]
             [promesa.core :as p]))
 
-;; WebSocket connections registry
-(defonce ^:private *ws-connections (atom #{}))
+;; WebSocket connections registry - now maps connection to metadata
+(defonce ^:private *ws-connections (atom {}))
+(defonce ^:private *connection-id-counter (atom 0))
 
 (defn- broadcast-to-mirrors!
   "Broadcast an event to all connected WebSocket clients"
   [event-type payload]
-  (doseq [^js conn @*ws-connections]
+  (doseq [[^js conn _metadata] @*ws-connections]
     (try
       (.send conn (js/JSON.stringify (clj->js {:type event-type :payload payload})))
       (catch :default e
@@ -27,57 +28,71 @@
 
 (defn- validate-mirror-auth
   "Validate authentication for mirror server access"
-  [auth-header]
+  [auth-token]
   (let [mirror-password (cfgs/get-item :server/mirror-password)]
-    (when (and mirror-password (not (string/blank? mirror-password)))
-      (let [provided-auth (string/replace (or auth-header "") "Bearer " "")]
-        (when (not= provided-auth mirror-password)
-          (throw (js/Error. "Invalid authentication")))))))
+    (when (or (string/blank? mirror-password)
+              (not= auth-token mirror-password))
+      (throw (js/Error. "Invalid authentication")))))
 
 (defn- ws-connection-handler
   "Handle WebSocket connection for RPC bridge"
   [^js connection ^js request win]
-  (try
-    ;; Validate auth on WebSocket upgrade
-    (let [^js headers (.-headers request)]
-      (validate-mirror-auth (.-authorization headers)))
+  (let [authenticated? (atom false)
+        conn-id (swap! *connection-id-counter inc)
+        socket (.-socket connection)]
+    (swap! *ws-connections assoc socket {:id conn-id :authenticated? authenticated?})
+    (logger/info "[mirror-server] WebSocket client connected" {:conn-id conn-id})
     
-    (swap! *ws-connections conj (.-socket connection))
-    (logger/info "[mirror-server] WebSocket client connected")
-    
-    (.on (.-socket connection) "message"
+    (.on socket "message"
          (fn [^js message]
            (try
              (let [msg (js/JSON.parse message)
-                   method (.-method msg)
-                   args (.-args msg)
-                   id (.-id msg)]
-               (logger/debug "[mirror-server] WS RPC call" {:method method :id id})
-               
-               ;; Forward RPC call to main window via IPC
-               (p/let [result (p/create
-                              (fn [resolve _reject]
-                                (let [ret-handle (fn [^js _w ret] (resolve ret))]
-                                  (utils/send-to-renderer win :invokeLogseqAPI 
-                                                        {:syncId id :method method :args args})
-                                  (.handleOnce ipcMain (str ::ws-rpc-result id) ret-handle))))]
-                 (.send (.-socket connection) 
-                        (js/JSON.stringify (clj->js {:id id :result result})))))
+                   auth (.-auth msg)]
+               ;; Handle authentication message
+               (if (and (not @authenticated?) auth)
+                 (do
+                   (validate-mirror-auth auth)
+                   (reset! authenticated? true)
+                   (logger/info "[mirror-server] Client authenticated successfully" {:conn-id conn-id})
+                   (.send socket 
+                          (js/JSON.stringify (clj->js {:type "auth-success"}))))
+                 ;; Handle RPC messages only after authentication
+                 (if @authenticated?
+                   (let [method (.-method msg)
+                         args (.-args msg)
+                         id (.-id msg)
+                         ;; Use connection-specific channel to avoid cross-connection interference
+                         ipc-channel (str ::ws-rpc-result conn-id "-" id)]
+                     (logger/debug "[mirror-server] WS RPC call" {:method method :id id :conn-id conn-id})
+                     
+                     ;; Forward RPC call to main window via IPC
+                     (p/let [result (p/create
+                                    (fn [resolve _reject]
+                                      (let [ret-handle (fn [^js _w ret] (resolve ret))]
+                                        (utils/send-to-renderer win :invokeLogseqAPI 
+                                                              {:syncId id :method method :args args})
+                                        (.handleOnce ipcMain ipc-channel ret-handle))))]
+                       (.send socket 
+                              (js/JSON.stringify (clj->js {:id id :result result})))))
+                   ;; Reject unauthenticated RPC calls
+                   (do
+                     (logger/warn "[mirror-server] Unauthenticated RPC attempt" {:conn-id conn-id})
+                     (.send socket
+                            (js/JSON.stringify (clj->js {:error "Authentication required"})))
+                     (.close socket)))))
              (catch :default e
-               (logger/error "[mirror-server] WS message error" e)))))
+               (logger/error "[mirror-server] WS message error" e)
+               (.send socket
+                      (js/JSON.stringify (clj->js {:error (.-message e)})))))))
     
-    (.on (.-socket connection) "close"
+    (.on socket "close"
          (fn []
-           (swap! *ws-connections disj (.-socket connection))
-           (logger/info "[mirror-server] WebSocket client disconnected")))
+           (swap! *ws-connections dissoc socket)
+           (logger/info "[mirror-server] WebSocket client disconnected" {:conn-id conn-id})))
     
-    (.on (.-socket connection) "error"
+    (.on socket "error"
          (fn [err]
-           (logger/error "[mirror-server] WebSocket error" err)))
-    
-    (catch :default e
-      (logger/error "[mirror-server] WebSocket connection error" e)
-      (.close (.-socket connection)))))
+           (logger/error "[mirror-server] WebSocket error" {:err err :conn-id conn-id})))))
 
 (defn- setup-mirror-routes!
   "Setup routes for serving frontend and WebSocket RPC"

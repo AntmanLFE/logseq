@@ -12,6 +12,28 @@
 (defonce ^:private *ws-rpc-id (atom 0))
 (defonce ^:private *pending-rpc-calls (atom {}))
 
+;; RPC timeout in milliseconds (30 seconds)
+(def ^:private rpc-timeout-ms 30000)
+
+(defn- cleanup-expired-rpc-calls!
+  "Clean up RPC calls that have timed out"
+  []
+  (let [now (js/Date.now)]
+    (swap! *pending-rpc-calls
+           (fn [calls]
+             (reduce-kv
+              (fn [m id call]
+                (if (> (- now (:timestamp call)) rpc-timeout-ms)
+                  (do
+                    ((:reject call) (js/Error. "RPC call timed out"))
+                    (dissoc m id))
+                  m))
+              calls
+              calls)))))
+
+;; Run cleanup every 10 seconds
+(js/setInterval cleanup-expired-rpc-calls! 10000)
+
 (defn- ws-rpc-call
   "Make an RPC call over WebSocket connection"
   [method & args]
@@ -20,7 +42,9 @@
      (fn [resolve reject]
        (let [id (swap! *ws-rpc-id inc)
              msg (bean/->js {:id id :method method :args args})]
-         (swap! *pending-rpc-calls assoc id {:resolve resolve :reject reject})
+         (swap! *pending-rpc-calls assoc id {:resolve resolve 
+                                             :reject reject
+                                             :timestamp (js/Date.now)})
          (.send ws (js/JSON.stringify msg)))))
     (p/rejected (js/Error. "WebSocket not connected"))))
 
@@ -32,8 +56,22 @@
           id (.-id msg)
           result (.-result msg)
           type (.-type msg)
-          payload (.-payload msg)]
+          payload (.-payload msg)
+          error (.-error msg)]
       (cond
+        ;; Authentication success
+        (= type "auth-success")
+        (log/info ::ws-authenticated "Successfully authenticated with mirror server")
+        
+        ;; Error response
+        error
+        (do
+          (log/error ::ws-error error)
+          (when id
+            (when-let [pending-call (get @*pending-rpc-calls id)]
+              (swap! *pending-rpc-calls dissoc id)
+              ((:reject pending-call) (js/Error. error)))))
+        
         ;; RPC response
         id
         (when-let [pending-call (get @*pending-rpc-calls id)]
