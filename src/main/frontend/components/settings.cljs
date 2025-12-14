@@ -1372,6 +1372,56 @@
               [:span.text-sm.opacity-50
                (t :settings-page/enable-mcp-server-desc)]))))
 
+(rum/defc mirror-server-row
+  [t]
+  (let [[checked set-checked!] (hooks/use-state false)
+        [password set-password!] (hooks/use-state "")]
+
+    (hooks/use-effect!
+     (fn []
+       (let [initial (get-in @state/state [:electron/server :mirror-enabled?])]
+         (set-checked! initial)))
+     [])
+
+    (let [on-toggle (fn []
+                      (let [new-val (not checked)]
+                        (set-checked! new-val)
+                        ;; Enable HTTP server when enabling mirror server
+                        (when (and new-val (not (storage/get ::storage-spec/http-server-enabled)))
+                          (storage/set ::storage-spec/http-server-enabled true))
+                        (-> (ipc/ipc :server/set-config {:mirror-enabled? new-val})
+                            ;; Restart server if running to apply changes
+                            (p/then #(when (= "running" (state/sub [:electron/server :status]))
+                                       (p/let [_ (p/delay 1000)]
+                                         (ipc/ipc :server/do :restart))))
+                            (p/catch #(notification/show! (str %) :error)))))
+          on-password-save (fn []
+                            (-> (ipc/ipc :server/set-config {:mirror-password password})
+                                (p/then #(notification/show! "Mirror server password saved" :success))
+                                (p/catch #(notification/show! (str %) :error))))]
+      [:div.flex.flex-col.gap-3
+       (toggle "mirror-server"
+               "Enable LAN Mirror Server"
+               checked
+               on-toggle
+               [:span.text-sm.opacity-50
+                "Allows web-based access to Logseq from other devices on your local network. Requires HTTP server to be enabled."])
+       (when checked
+         [:div.it.sm:grid.sm:grid-cols-3.sm:gap-4.sm:items-start.ml-8
+          [:label.block.text-sm.font-medium.leading-8.opacity-70
+           {:for "mirror-password"}
+           "Access Password"]
+          [:div.sm:col-span-2.flex.gap-2
+           [:input.form-input.block.w-full.sm:text-sm.sm:leading-5.rounded-md
+            {:id "mirror-password"
+             :type "password"
+             :placeholder "Enter password for web access"
+             :value password
+             :on-change #(set-password! (.. % -target -value))}]
+           [:button.ui__button.bg-indigo-600.hover:bg-indigo-700.text-white
+            {:on-click on-password-save}
+            "Save"]]])])))
+
 (rum/defc settings-ai
   []
   (let [[model-info set-model-info] (hooks/use-state nil)
@@ -1408,6 +1458,8 @@
      [])
     [:div.panel-wrap
      (mcp-server-row t)
+     (when (util/electron?)
+       (mirror-server-row t))
      [:div.flex.flex-col.gap-2.mt-4
       [:div.font-medium.text-muted-foreground.text-sm "Semantic search:"]
 

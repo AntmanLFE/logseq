@@ -9,6 +9,7 @@
             [clojure.string :as string]
             [electron.configs :as cfgs]
             [electron.logger :as logger]
+            [electron.mirror-server :as mirror-server]
             [electron.utils :as utils]
             [electron.window :as window]
             [logseq.cli.common.mcp.server :as cli-common-mcp-server]
@@ -31,7 +32,8 @@
                   :port      (get-port)
                   :tokens    (cfgs/get-item :server/tokens)
                   :autostart (cfgs/get-item :server/autostart)
-                  :mcp-enabled? (cfgs/get-item :server/mcp-enabled?)}))
+                  :mcp-enabled? (cfgs/get-item :server/mcp-enabled?)
+                  :mirror-enabled? (cfgs/get-item :mirror-server/enabled)}))
 
 (defn- set-status!
   ([status] (set-status! status nil))
@@ -169,6 +171,9 @@
                                           (.send html))))))
               _ (when (:mcp-enabled? @*state)
                   (initialize-mcp-routes s))
+              ;; Setup mirror server routes if enabled
+              _ (when (:mirror-enabled? @*state)
+                  (mirror-server/setup-mirror-server-in-main! s @*win))
               ;; listen port
               _     (.listen s (bean/->js (select-keys @*state [:host :port])))]
         (reset! *server s)
